@@ -1,0 +1,140 @@
+name: marketplace-analytics
+
+services:
+  # Metadata DB d'Airflow
+  postgres-airflow:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Data Warehouse (schémas staging / dwh / analytics créés au 1er démarrage)
+  postgres-dwh:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${DWH_USER}
+      POSTGRES_PASSWORD: ${DWH_PASSWORD}
+      POSTGRES_DB: ${DWH_DB}
+    ports:
+      - "5434:5432"   # 5433 occupé par un autre TP sur cette machine
+    volumes:
+      - pg-dwh-data:/var/lib/postgresql/data
+      - ./sql/init_dwh.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DWH_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Stockage objet S3 (remplace MinIO)
+  garage:
+    image: dxflrs/garage:v2.2.0   # v2 requis par garage-webui (API admin /v2)
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+    ports:
+      - "3920:3900"   # API S3 (3900 occupé par un autre TP)
+      - "3923:3903"   # API admin
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+
+  # Interface web pour explorer Garage (buckets, objets, clés)
+  garage-webui:
+    image: khairul169/garage-webui:latest
+    environment:
+      API_BASE_URL: http://garage:3903
+      API_ADMIN_KEY: ${GARAGE_ADMIN_TOKEN}
+      S3_ENDPOINT_URL: http://garage:3900
+      S3_REGION: garage
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+    ports:
+      - "3909:3909"
+    depends_on:
+      - garage
+
+  # Job one-shot : layout + clé S3 + bucket (idempotent)
+  garage-init:
+    image: python:3.12-alpine
+    command: python /init.py
+    restart: "no"
+    environment:
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+    volumes:
+      - ./garage/init.py:/init.py:ro
+    depends_on:
+      - garage
+
+  # API marketplace simulée (Flask, auth Bearer)
+  api:
+    build: ./api
+    environment:
+      API_TOKEN: ${API_TOKEN}
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Airflow 3 tout-en-un (api-server + scheduler + dag-processor + triggerer)
+  airflow:
+    image: apache/airflow:3.1.8
+    command: standalone
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"   # pas de login (TP)
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@postgres-airflow:5432/${AIRFLOW_DB_NAME}
+      # Connexions Airflow déclarées par variables d'env
+      AIRFLOW_CONN_MARKETPLACE_API: http://:${API_TOKEN}@api:5000
+      AIRFLOW_CONN_POSTGRES_DWH: postgres://${DWH_USER}:${DWH_PASSWORD}@postgres-dwh:5432/${DWH_DB}
+      AIRFLOW_CONN_GARAGE_S3: >-
+        {"conn_type": "aws", "login": "${S3_ACCESS_KEY}", "password": "${S3_SECRET_KEY}",
+         "extra": {"endpoint_url": "http://garage:3900", "region_name": "garage"}}
+      S3_BUCKET: ${S3_BUCKET}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      garage-init:
+        condition: service_completed_successfully
+
+  # Dashboard Streamlit (option 2)
+  streamlit:
+    build: ./dashboard
+    environment:
+      DWH_URI: postgresql+psycopg2://${DWH_USER}:${DWH_PASSWORD}@postgres-dwh:5432/${DWH_DB}
+    ports:
+      - "8501:8501"
+    depends_on:
+      postgres-dwh:
+        condition: service_healthy
+
+volumes:
+  pg-airflow-data:
+  pg-dwh-data:
+  garage-meta:
+  garage-data:
