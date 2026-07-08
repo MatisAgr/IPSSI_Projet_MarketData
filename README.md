@@ -13,18 +13,18 @@ Pipeline **ELT batch idempotent** pour une marketplace e-commerce :
 docker compose up -d --build
 ```
 
-Les DAGs sont dépausés automatiquement : le catchup rejoue l'historique depuis le
-`start_date` (2026-07-01), ce qui donne assez de profondeur pour la moyenne mobile 7 jours.
+Les DAGs sont dépausés automatiquement : le catchup rejoue **~3 mois d'historique** depuis le
+`start_date` (2026-04-08), largement assez pour la moyenne mobile 7 jours et des courbes lisibles.
 
-| Service | URL | Rôle |
-|---|---|---|
-| Airflow 3.1.8 | http://localhost:8080 | Orchestrateur (login désactivé pour le TP) |
-| Streamlit | http://localhost:8501 | Dashboard KPIs + anomalies |
-| API marketplace | http://localhost:5000 | API Flask simulée (auth Bearer, cf. `.env`) |
-| Garage S3 | http://localhost:3920 | Stockage objet, bucket `raw` |
-| Garage WebUI | http://localhost:3909 | Interface web pour explorer Garage |
-| PostgreSQL DWH | localhost:5434 (`dwh`/`dwh`) | Schémas `staging` / `dwh` / `analytics` |
-| PostgreSQL Airflow | localhost:5432 | Metadata DB |
+| Service            | URL                          | Rôle                                        |
+| ------------------ | ---------------------------- | ------------------------------------------- |
+| Airflow 3.1.8      | http://localhost:8080        | Orchestrateur (login désactivé pour le TP)  |
+| Streamlit          | http://localhost:8501        | Dashboard KPIs + anomalies                  |
+| API marketplace    | http://localhost:5000        | API Flask simulée (auth Bearer, cf. `.env`) |
+| Garage S3          | http://localhost:3920        | Stockage objet, bucket `raw`                |
+| Garage WebUI       | http://localhost:3909        | Interface web pour explorer Garage          |
+| PostgreSQL DWH     | localhost:5434 (`dwh`/`dwh`) | Schémas `staging` / `dwh` / `analytics`     |
+| PostgreSQL Airflow | localhost:5432               | Metadata DB                                 |
 
 ## Architecture globale
 
