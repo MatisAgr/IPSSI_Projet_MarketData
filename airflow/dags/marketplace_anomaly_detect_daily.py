@@ -5,6 +5,7 @@ import pendulum
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 
+from lib.alerting import notify_dag_failure
 from lib.assets import DWH_ORDERS, resolve_dts
 from lib.marketplace_hook import MarketplaceAPIHook
 
@@ -40,6 +41,7 @@ WHERE h.avg_7d > 0 AND t.revenue < 0.7 * h.avg_7d
     start_date=pendulum.datetime(2026, 4, 8, tz="UTC"),
     catchup=False,
     max_active_runs=1,
+    on_failure_callback=notify_dag_failure,
     tags=["marketplace", "anomalies"],
 )
 def marketplace_anomaly_detect_daily():

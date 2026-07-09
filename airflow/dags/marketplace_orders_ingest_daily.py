@@ -8,6 +8,7 @@ from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 
+from lib.alerting import notify_dag_failure
 from lib.assets import RAW_ORDERS
 from lib.data_quality import DataQualityOperator
 from lib.marketplace_hook import MarketplaceAPIHook
@@ -29,6 +30,7 @@ COLUMNS = {
     start_date=pendulum.datetime(2026, 4, 8, tz="UTC"),  # ~3 mois d'historique pour le backfill
     catchup=True,
     max_active_runs=1,
+    on_failure_callback=notify_dag_failure,
     tags=["marketplace", "elt"],
 )
 def marketplace_orders_ingest_daily():
