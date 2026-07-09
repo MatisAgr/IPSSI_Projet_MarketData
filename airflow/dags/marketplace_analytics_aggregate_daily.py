@@ -39,6 +39,45 @@ AGGREGATIONS = [
        WHERE dt BETWEEN %(dt)s::date - 29 AND %(dt)s::date""",
 ]
 
+# Segmentation RFM (Récence/Fréquence/Montant) : snapshot complet recalculé à chaque run,
+# scoré en quartiles (NTILE 4) sur tout l'historique disponible, pas de partition dt.
+RFM_SQL = """
+TRUNCATE analytics.customer_rfm;
+INSERT INTO analytics.customer_rfm
+WITH calc_date AS (
+    SELECT MAX(dt) AS dt FROM dwh.fact_orders
+),
+cust_stats AS (
+    SELECT customer_id,
+           (SELECT dt FROM calc_date) - MAX(dt) AS recency_days,
+           COUNT(*) AS frequency,
+           SUM(total_amount) AS monetary
+    FROM dwh.fact_orders
+    WHERE status NOT IN ('cancelled', 'refunded')
+    GROUP BY customer_id
+),
+scored AS (
+    SELECT cs.customer_id, c.email AS customer_email, c.city,
+           cs.recency_days, cs.frequency, cs.monetary,
+           NTILE(4) OVER (ORDER BY cs.recency_days DESC) AS r_score,
+           NTILE(4) OVER (ORDER BY cs.frequency ASC) AS f_score,
+           NTILE(4) OVER (ORDER BY cs.monetary ASC) AS m_score
+    FROM cust_stats cs
+    JOIN dwh.dim_customer c USING (customer_id)
+)
+SELECT customer_id, customer_email, city, (SELECT dt FROM calc_date),
+       recency_days, frequency, monetary, r_score, f_score, m_score,
+       CASE
+           WHEN r_score >= 4 AND f_score >= 4 AND m_score >= 4 THEN 'Champions'
+           WHEN f_score >= 3 AND m_score >= 3 THEN 'Fidèles'
+           WHEN r_score <= 2 AND (f_score >= 3 OR m_score >= 3) THEN 'À risque'
+           WHEN f_score <= 1 AND r_score >= 4 THEN 'Nouveaux'
+           WHEN r_score <= 1 AND f_score <= 1 AND m_score <= 1 THEN 'Perdus'
+           ELSE 'Standard'
+       END AS segment
+FROM scored;
+"""
+
 
 @dag(
     schedule=[DWH_ORDERS],
@@ -58,7 +97,13 @@ def marketplace_analytics_aggregate_daily():
             pg.run(AGGREGATIONS, parameters={"dt": dt})
             print(f"Tables analytics reconstruites pour dt={dt}")
 
-    aggregate(dts)
+    @task
+    def compute_rfm():
+        pg = PostgresHook(postgres_conn_id="postgres_dwh")
+        pg.run(RFM_SQL)
+        print("Segmentation RFM clients recalculée")
+
+    aggregate(dts) >> compute_rfm()
 
 
 marketplace_analytics_aggregate_daily()
