@@ -119,3 +119,18 @@ CREATE TABLE analytics.anomalies (
     detected_at timestamp DEFAULT now(),
     PRIMARY KEY (dt, seller_id)
 );
+
+-- Segmentation clients RFM (snapshot recalculé en entier à chaque run, pas de partition dt)
+CREATE TABLE analytics.customer_rfm (
+    customer_id    text PRIMARY KEY,
+    customer_email text,
+    city           text,
+    calculated_at  date,
+    recency_days   int,
+    frequency      int,
+    monetary       numeric(12, 2),
+    r_score        int,
+    f_score        int,
+    m_score        int,
+    segment        text
+);
