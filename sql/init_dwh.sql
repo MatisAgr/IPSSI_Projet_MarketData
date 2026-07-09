@@ -61,6 +61,14 @@ CREATE TABLE dwh.dim_product (
     base_price numeric(10, 2)
 );
 
+-- Enrichissement des catégories produit via un référentiel externe (bonus)
+CREATE TABLE dwh.dim_category (
+    category           text PRIMARY KEY,
+    department         text,
+    margin_target_pct  numeric(5, 1),
+    is_seasonal        boolean
+);
+
 CREATE TABLE dwh.dim_date (
     dt          date PRIMARY KEY,
     year        int,
