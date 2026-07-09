@@ -112,8 +112,10 @@ services:
         {"conn_type": "aws", "login": "${S3_ACCESS_KEY}", "password": "${S3_SECRET_KEY}",
          "extra": {"endpoint_url": "http://garage:3900", "region_name": "garage"}}
       S3_BUCKET: ${S3_BUCKET}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
     volumes:
       - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/tests:/opt/airflow/tests
     depends_on:
       postgres-airflow:
         condition: service_healthy
