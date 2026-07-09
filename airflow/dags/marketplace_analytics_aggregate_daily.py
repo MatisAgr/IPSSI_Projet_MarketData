@@ -4,6 +4,7 @@ import pendulum
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 
+from lib.alerting import notify_dag_failure
 from lib.assets import DWH_ORDERS, resolve_dts
 
 # Le CA exclut les commandes annulées / remboursées
@@ -84,6 +85,7 @@ FROM scored;
     start_date=pendulum.datetime(2026, 4, 8, tz="UTC"),
     catchup=False,
     max_active_runs=1,
+    on_failure_callback=notify_dag_failure,
     tags=["marketplace", "analytics"],
 )
 def marketplace_analytics_aggregate_daily():

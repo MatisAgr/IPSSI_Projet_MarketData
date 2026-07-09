@@ -166,6 +166,60 @@ docker compose exec postgres-dwh psql -U dwh -c \
 
 Les compteurs et montants restent identiques à chaque relance.
 
+## Fonctionnalités bonus
+
+### Alerting Slack / webhook sur échec de DAG
+
+[`airflow/dags/lib/alerting.py`](airflow/dags/lib/alerting.py) — `notify_dag_failure`, branché en
+`on_failure_callback` sur les 4 DAGs (déclenché quand un DagRun passe en `failed`).
+Si `ALERT_WEBHOOK_URL` (`.env`) pointe vers une Slack Incoming Webhook, l'alerte y est postée ;
+sinon repli automatique sur le webhook simulé de l'API marketplace (même mécanisme que les
+alertes d'anomalies), pour rester testable sans dépendance externe :
+
+```bash
+curl -s -H "Authorization: Bearer ipssi-marketplace-token" http://localhost:5000/webhook
+```
+
+### Tests pytest sur le Custom Operator
+
+[`airflow/tests/test_data_quality_operator.py`](airflow/tests/test_data_quality_operator.py) —
+`DataQualityOperator` testé avec `PostgresHook` mocké (aucun Postgres réel requis) :
+règles `eq`/`gt`, violations, agrégation des échecs multiples, `conn_id` utilisé.
+
+```bash
+bash scripts/run-tests.sh
+```
+
+### Backfill manuel
+
+[`scripts/backfill.sh`](scripts/backfill.sh) relance `marketplace_orders_ingest_daily` sur une
+plage de dates via `airflow backfill create` ; les DAGs avals (`dwh_build`, `analytics_aggregate`,
+`anomaly_detect`) se déclenchent automatiquement via leurs Assets, pas besoin de les lancer :
+
+```bash
+bash scripts/backfill.sh 2026-06-01 2026-06-07
+```
+
+⚠️ Le flag `--max-active-runs 1` est indispensable : `staging.sellers/products/customers` sont
+rechargées en `TRUNCATE` + `INSERT` complet (non partitionnées par `dt`), donc deux runs
+d'ingestion concurrents se marchent dessus. Le `backfill create` d'Airflow a sa propre
+concurrence, indépendante du `max_active_runs=1` défini sur le DAG.
+
+### `dim_category` enrichie (référentiel externe)
+
+[`airflow/dags/lib/category_reference.py`](airflow/dags/lib/category_reference.py) simule un
+mapping externe (taxonomie business) chargé par la tâche `build_dim_category` du DAG
+`marketplace_dwh_build_daily`, qui peuple `dwh.dim_category` (`department`, `margin_target_pct`,
+`is_seasonal`) en upsert. Une règle DQ (`categories_couvertes`) vérifie que toute catégorie de
+`dim_product` a bien une correspondance dans `dim_category`.
+
+Sur un DWH déjà initialisé (volume Postgres existant), la table ne se crée pas toute seule
+(`init_dwh.sql` ne rejoue que sur un volume vierge) — appliquer la migration :
+
+```bash
+docker compose exec -T postgres-dwh psql -U dwh -d dwh -f - < sql/migrations/001_dim_category.sql
+```
+
 ## Structure du projet
 
 ```
@@ -174,8 +228,11 @@ Les compteurs et montants restent identiques à chaque relance.
 ├── api/                      # API marketplace simulée (Flask, Bearer, webhook)
 ├── garage/                   # config Garage + script d'init (layout, clé, bucket)
 ├── sql/init_dwh.sql          # création des schémas staging / dwh / analytics
+├── sql/migrations/           # migrations pour les DWH déjà initialisés
+├── scripts/                  # backfill.sh, run-tests.sh
 ├── airflow/dags/             # les 4 DAGs
-│   └── lib/                  # Custom Hook, Custom Operator, Assets partagés
+│   └── lib/                  # Custom Hook, Custom Operator, Assets, alerting, référentiel catégories
+├── airflow/tests/            # tests pytest (Custom Operator, DB mockée)
 └── dashboard/                # app Streamlit (option 2)
 ```
 
