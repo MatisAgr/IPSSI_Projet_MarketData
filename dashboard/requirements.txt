@@ -4,3 +4,4 @@ sqlalchemy==2.0.*
 psycopg2-binary==2.9.*
 numpy==1.26.*
 plotly==5.24.*
+redis==5.2.*

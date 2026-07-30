@@ -142,3 +142,14 @@ CREATE TABLE analytics.customer_rfm (
     m_score        int,
     segment        text
 );
+
+-- Vérité batch recalculée depuis le log d'évènements archivé (boucle Lambda).
+-- Le dashboard la compare aux agrégats approximatifs du speed layer.
+CREATE TABLE analytics.stream_daily (
+    dt           date,
+    seller_id    text,
+    orders_count int,
+    revenue      numeric(12, 2),
+    computed_at  timestamp DEFAULT now(),
+    PRIMARY KEY (dt, seller_id)
+);

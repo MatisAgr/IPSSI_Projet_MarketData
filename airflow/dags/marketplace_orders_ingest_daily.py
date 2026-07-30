@@ -1,9 +1,11 @@
-"""DAG 1 — Ingestion quotidienne : API (Custom Hook) -> Garage S3 (raw) -> staging PostgreSQL.
+"""DAG 1 — Ingestion quotidienne : API (Custom Hook) -> Garage S3 (raw Parquet) -> staging.
 Idempotent : DELETE + INSERT sur la partition dt = {{ ds }}."""
-import json
+import io
 import os
 
 import pendulum
+import pyarrow as pa
+import pyarrow.parquet as pq
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
@@ -25,6 +27,18 @@ COLUMNS = {
 }
 
 
+def write_parquet(s3, rows, key):
+    """Sérialise des dicts en Parquet compressé (format colonne du data lake)."""
+    out = io.BytesIO()
+    pq.write_table(pa.Table.from_pylist(rows), out, compression="snappy")
+    s3.load_bytes(out.getvalue(), key=key, bucket_name=BUCKET, replace=True)
+
+
+def read_parquet(s3, key):
+    body = s3.get_key(key, BUCKET).get()["Body"].read()
+    return pq.read_table(io.BytesIO(body)).to_pylist()
+
+
 @dag(
     schedule="@daily",
     start_date=pendulum.datetime(2026, 4, 8, tz="UTC"),  # ~3 mois d'historique pour le backfill
@@ -37,7 +51,7 @@ def marketplace_orders_ingest_daily():
 
     @task
     def extract_to_raw(ds=None):
-        """Extrait les 4 entités via le Custom Hook et dépose le JSON brut sur Garage."""
+        """Extrait les 4 entités via le Custom Hook et dépose du Parquet brut sur Garage."""
         api = MarketplaceAPIHook()
         s3 = S3Hook(aws_conn_id="garage_s3")
         entities = {
@@ -47,8 +61,8 @@ def marketplace_orders_ingest_daily():
             "customers": api.get_customers(),
         }
         for name, rows in entities.items():
-            key = f"{name}/dt={ds}/{name}.json"
-            s3.load_string(json.dumps(rows), key=key, bucket_name=BUCKET, replace=True)
+            key = f"{name}/dt={ds}/{name}.parquet"
+            write_parquet(s3, rows, key)
             print(f"{len(rows)} lignes -> s3://{BUCKET}/{key}")
 
     @task
@@ -57,7 +71,7 @@ def marketplace_orders_ingest_daily():
         commandes: DELETE+INSERT sur la partition dt)."""
         s3 = S3Hook(aws_conn_id="garage_s3")
         pg = PostgresHook(postgres_conn_id="postgres_dwh")
-        read = lambda name: json.loads(s3.read_key(f"{name}/dt={ds}/{name}.json", BUCKET))
+        read = lambda name: read_parquet(s3, f"{name}/dt={ds}/{name}.parquet")
 
         for name in ("sellers", "products", "customers"):
             rows = read(name)

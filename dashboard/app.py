@@ -1,5 +1,6 @@
 """Dashboard Streamlit (option 2) : KPIs business + anomalies détectées.
 Lit uniquement les tables analytics.* alimentées par les DAGs Airflow."""
+import json
 import os
 from datetime import timedelta
 
@@ -7,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import redis
 import streamlit as st
 from sqlalchemy import create_engine
 
@@ -24,8 +26,27 @@ st.set_page_config(page_title="Marketplace Analytics", page_icon="🛒", layout=
 engine = create_engine(os.environ["DWH_URI"])
 
 
+def connect_redis():
+    """Speed layer optionnel : le dashboard reste utilisable si Redis est absent."""
+    try:
+        client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
+rds = connect_redis()
+
+
 @st.cache_data(ttl=60)
 def query(sql: str) -> pd.DataFrame:
+    return pd.read_sql(sql, engine)
+
+
+@st.cache_data(ttl=10)
+def query_live(sql: str) -> pd.DataFrame:
+    """Requêtes de la boucle Lambda : cache court, elles bougent en continu."""
     return pd.read_sql(sql, engine)
 
 
@@ -37,6 +58,64 @@ def pct_delta(current: float, previous: float) -> str | None:
 
 
 st.title("🛒 Marketplace Analytics")
+
+
+@st.fragment(run_every="2s")
+def speed_layer_section():
+    """Speed layer : lit le snapshot Redis réécrit toutes les 2s par le consumer Kafka."""
+    st.subheader("⚡ Temps réel — speed layer")
+    if rds is None:
+        st.warning("Redis injoignable : couche temps réel indisponible.")
+        return
+    raw = rds.get("live:snapshot")
+    if not raw:
+        st.info("En attente du speed layer… (vérifie les services `producer` et `speed-consumer`)")
+        return
+
+    snap = json.loads(raw)
+    window = snap["window_seconds"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"CA sur {window}s", f"{snap['revenue_in_window']:,.0f} €")
+    c2.metric(f"Commandes sur {window}s", f"{snap['orders_in_window']:,}")
+    c3.metric("Évènements traités", f"{snap['events_total']:,}")
+    c4.metric("Anomalies live", len(snap["anomalies"]))
+    st.caption(f"Snapshot du {snap['updated_at']} UTC — rafraîchi toutes les 2 s")
+
+    left, right = st.columns(2)
+    with left:
+        st.caption(f"Top vendeurs sur les {window} dernières secondes")
+        top = pd.DataFrame(snap["top_sellers"])
+        if not top.empty:
+            st.bar_chart(top.set_index("seller_id")["revenue"], color=ACCENT,
+                         horizontal=True, height=260)
+    with right:
+        st.caption("🚨 Chutes de CA détectées en direct")
+        if snap["anomalies"]:
+            st.dataframe(
+                pd.DataFrame(snap["anomalies"]).rename(columns={
+                    "seller_id": "Vendeur", "revenue_window": f"CA {window}s (€)",
+                    "expected": "Attendu (€)", "drop_pct": "Chute (%)"}),
+                use_container_width=True, hide_index=True, height=260)
+        else:
+            st.success("Aucune anomalie sur la fenêtre courante.")
+
+    with st.expander("🔁 Boucle Lambda — temps réel vs vérité batch (log rejoué)"):
+        batch = query_live(
+            "SELECT COALESCE(SUM(orders_count), 0) AS orders, COALESCE(SUM(revenue), 0) AS revenue "
+            "FROM analytics.stream_daily WHERE dt = CURRENT_DATE")
+        b1, b2 = st.columns(2)
+        b1.metric("Vu en direct (speed layer)", f"{snap['events_total']:,} commandes")
+        b2.metric("Rejoué depuis Garage (batch)", f"{int(batch['orders'].iloc[0]):,} commandes")
+        st.caption(
+            "Les deux couches consomment le **même** log Kafka via deux groupes distincts. "
+            "Le speed layer répond en secondes depuis un état en mémoire ; le batch relit tout "
+            "le Parquet archivé et fait foi. L'écart = évènements pas encore archivés/réconciliés."
+        )
+
+
+speed_layer_section()
+st.divider()
+st.subheader("📦 Historique — couche batch")
 
 daily = query("SELECT dt, orders_count, revenue FROM analytics.daily_revenue ORDER BY dt")
 if daily.empty:
